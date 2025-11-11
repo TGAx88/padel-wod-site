@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Padel Athlete - WOD Platform</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configure Tailwind to use Inter font and custom colors -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        // --- CUSTOM BRAND COLORS (Updated for Red/Black theme) ---
+                        'primary-500': '#1F2937', // Dark Gray/Black (Main Brand)
+                        'primary-600': '#000000', // Pure Black
+                        'accent': '#DC2626', // Bold Red (CTA/Highlight - Red 600)
+                        'accent-dark': '#B91C1C', // Darker Red (Red 700 for hover)
+                        'secondary': '#FBBF24', // Amber (Secondary Highlight, kept for accents)
+                        // ---------------------------
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom styles for a clean, sporty look */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #F8FAFC; 
+        }
+        .container-padding {
+            padding: 4rem 1rem;
+        }
+        @media (min-width: 640px) {
+            .container-padding {
+                padding: 4rem 4rem;
+            }
+        }
+        /* Style for the fixed header/filters */
+        .sticky-header-space {
+            top: 6rem; /* Adjust based on header height */
+        }
+    </style>
+</head>
+<body class="text-gray-800 antialiased">
+
+    <!-- Firebase SDK Imports (required for database and auth) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, serverTimestamp, setLogLevel, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // IMPORTANT: Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId;
+        let workouts = []; // Global array to hold WOD objects
+        let currentFilter = 'ALL';
+        const CATEGORIES = ['SYNC', 'PERFORM', 'STRENGTH', 'POWER', 'AGILITY', 'RECOVERY', 'MOVE'];
+
+        // Helper function to initialize Firebase and authenticate
+        async function initializeFirebase() {
+            try {
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase configuration is missing or empty.");
+                    document.getElementById('status-message').textContent = "Database setup failed. Check console for details.";
+                    return;
+                }
+
+                setLogLevel('error');
+
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Authenticate the user (using anonymous or custom token)
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                    userId = auth.currentUser.uid;
+                } else {
+                    await signInAnonymously(auth);
+                    userId = auth.currentUser.uid;
+                }
+                
+                console.log("Firebase initialized. User ID:", userId);
+                document.getElementById('status-message').classList.add('hidden'); // Hide status on success
+                
+                window.renderFilters(); // Setup category buttons
+                window.renderCategoryOptions(); // NEW: Setup modal options after CATEGORIES is defined
+                setupWorkoutListener(); // Start listening for WODs
+
+            } catch (error) {
+                console.error("Firebase initialization or authentication failed:", error);
+                document.getElementById('status-message').textContent = "Authentication failed. WOD database features disabled.";
+            }
+        }
+
+        // --- UI Rendering and Filtering Functions ---
+
+        // Function to update the UI based on the current workouts array and filter
+        window.renderWorkouts = function() {
+            const container = document.getElementById('workouts-grid');
+            if (!container) return;
+
+            // Filter the workouts based on the current filter
+            const filteredWorkouts = workouts.filter(wod => 
+                currentFilter === 'ALL' || wod.category === currentFilter
+            );
+
+            let html = '';
+            
+            if (filteredWorkouts.length === 0) {
+                 html = `<div class="md:col-span-3 text-center py-12 text-gray-500">
+                    No ${currentFilter === 'ALL' ? '' : currentFilter + ' '}Workouts Found in this category.
+                </div>`;
+            } else {
+                filteredWorkouts.forEach(wod => {
+                    // Placeholder image URL based on the category
+                    const imageUrl = `https://placehold.co/400x200/1F2937/FFFFFF?text=${wod.category}`;
+                    
+                    // Simple logic to assign color based on category for quick visual id
+                    let categoryStyle = 'bg-primary-500/10 text-primary-600';
+                    if (wod.category === 'STRENGTH' || wod.category === 'POWER') {
+                        // Using red-based colors for strength/power, which fits the new theme
+                        categoryStyle = 'bg-red-600/10 text-red-700 font-bold'; 
+                    } else if (wod.category === 'RECOVERY') {
+                        categoryStyle = 'bg-accent/10 text-accent'; // Red accent
+                    } else if (wod.category === 'MOVE') {
+                        categoryStyle = 'bg-indigo-700/10 text-indigo-700'; // Kept a cool color for contrast
+                    }
+
+
+                    html += `
+                    <div class="bg-white rounded-xl shadow-xl overflow-hidden border border-gray-100 transform hover:scale-[1.01] transition duration-300">
+                        <img src="${imageUrl}" alt="Workout image for ${wod.category}" class="w-full h-40 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/400x200/000000/FFFFFF?text=PADEL+WOD';" loading="lazy">
+                        <div class="p-5">
+                            <span class="inline-block px-3 py-1 text-xs font-semibold uppercase rounded-full ${categoryStyle} mb-2">${wod.category}</span>
+                            <h3 class="text-xl font-bold mb-2 text-gray-900">${wod.title}</h3>
+                            <div class="text-gray-600 text-sm mb-4 whitespace-pre-wrap">
+                                ${wod.content}
+                            </div>
+                            ${wod.videoUrl ? `<a href="${wod.videoUrl}" target="_blank" class="text-accent hover:text-accent-dark font-medium flex items-center mt-3">
+                                Watch Video Guide
+                                <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 12v3.832c0 .777.857 1.29 1.5.967l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            </a>` : ''}
+                        </div>
+                    </div>`;
+                });
+            }
+
+            container.innerHTML = html;
+        }
+
+        // Function to handle filtering when a category button is clicked
+        window.setFilter = function(filter) {
+            // Update active state on buttons
+            document.querySelectorAll('#category-filters button').forEach(button => {
+                if (button.dataset.filter === filter) {
+                    button.classList.add('bg-primary-500', 'text-white', 'shadow-lg');
+                    button.classList.remove('bg-gray-200', 'text-gray-700', 'hover:bg-primary-500/10');
+                } else {
+                    button.classList.remove('bg-primary-500', 'text-white', 'shadow-lg');
+                    button.classList.add('bg-gray-200', 'text-gray-700', 'hover:bg-primary-500/10');
+                }
+            });
+
+            currentFilter = filter;
+            window.renderWorkouts();
+        }
+
+        // Function to generate and set the category filter buttons
+        window.renderFilters = function() {
+            const filterContainer = document.getElementById('category-filters');
+            if (!filterContainer) return;
+
+            let html = `
+                <button data-filter="ALL" onclick="setFilter('ALL')" 
+                    class="px-4 py-2 rounded-full font-medium text-sm transition duration-150 whitespace-nowrap
+                    bg-primary-500 text-white shadow-lg">
+                    ALL WODs
+                </button>
+            `;
+
+            CATEGORIES.forEach(category => {
+                html += `
+                    <button data-filter="${category}" onclick="setFilter('${category}')" 
+                        class="px-4 py-2 rounded-full font-medium text-sm transition duration-150 whitespace-nowrap 
+                        bg-gray-200 text-gray-700 hover:bg-primary-500/10">
+                        ${category}
+                    </button>
+                `;
+            });
+            
+            filterContainer.innerHTML = html;
+        }
+
+        // Function to dynamically populate the category select dropdown in the modal
+        window.renderCategoryOptions = function() {
+            const select = document.getElementById('wod-category');
+            if (!select) return;
+
+            // Start with the disabled placeholder option
+            let html = '<option value="" disabled selected>Select a category...</option>';
+            
+            // Add options from the CATEGORIES array
+            CATEGORIES.forEach(category => {
+                html += `<option value="${category}">${category}</option>`;
+            });
+            
+            select.innerHTML = html;
+        }
+
+
+        // Set up real-time listener for workouts
+        function setupWorkoutListener() {
+            if (!db) return;
+
+            // Public collection path for the workouts
+            const collectionPath = `artifacts/${appId}/public/data/padel_workouts`;
+            const q = query(collection(db, collectionPath));
+            
+            onSnapshot(q, (querySnapshot) => {
+                const newWorkouts = [];
+                querySnapshot.forEach((doc) => {
+                    newWorkouts.push({ id: doc.id, ...doc.data() });
+                });
+                
+                // Sort the workouts client-side by timestamp (newest first)
+                newWorkouts.sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0));
+
+                workouts = newWorkouts;
+                window.renderWorkouts(); // Re-render the UI
+                
+                const countElement = document.getElementById('wod-count');
+                if (countElement) {
+                     countElement.textContent = workouts.length;
+                }
+            }, (error) => {
+                console.error("Error listening to workouts:", error);
+                document.getElementById('status-message').textContent = "Error loading workouts. See console.";
+            });
+        }
+
+        // --- Admin/Upload Functions ---
+
+        // Global function to open the modal
+        window.openModal = function() {
+            document.getElementById('add-wod-modal').classList.remove('hidden');
+        }
+
+        // Global function to close the modal
+        window.closeModal = function() {
+            document.getElementById('add-wod-modal').classList.add('hidden');
+            document.getElementById('add-wod-form').reset(); // Clear form on close
+        }
+
+        // Global function to submit the new WOD
+        window.addWorkout = async function(event) {
+            event.preventDefault();
+            
+            const title = document.getElementById('wod-title').value.trim();
+            const category = document.getElementById('wod-category').value;
+            const content = document.getElementById('wod-content').value.trim();
+            const videoUrl = document.getElementById('wod-video-url').value.trim();
+            const addButton = document.getElementById('add-wod-submit');
+            
+            if (!title || !category || !content) {
+                // Use a custom message box instead of alert()
+                document.getElementById('modal-message').textContent = "Please fill in the Title, Category, and Content fields.";
+                document.getElementById('modal-message').classList.remove('hidden');
+                return;
+            }
+
+            addButton.disabled = true;
+            addButton.textContent = "Saving...";
+            document.getElementById('modal-message').classList.add('hidden');
+
+            if (!db) {
+                document.getElementById('modal-message').textContent = "Database not ready. Cannot save.";
+                document.getElementById('modal-message').classList.remove('hidden');
+                addButton.disabled = false;
+                addButton.textContent = "Add Workout";
+                return;
+            }
+
+            try {
+                // Public data path: /artifacts/{appId}/public/data/padel_workouts
+                const collectionPath = `artifacts/${appId}/public/data/padel_workouts`;
+                
+                await addDoc(collection(db, collectionPath), {
+                    title: title,
+                    category: category,
+                    content: content,
+                    videoUrl: videoUrl,
+                    timestamp: serverTimestamp(),
+                    uploaderId: userId,
+                });
+
+                window.closeModal();
+                // Confirmation Message (using a simple, visible toast)
+                document.getElementById('toast-success').classList.remove('opacity-0');
+                setTimeout(() => document.getElementById('toast-success').classList.add('opacity-0'), 3000);
+
+
+            } catch (e) {
+                console.error("Error adding workout: ", e);
+                document.getElementById('modal-message').textContent = "Error saving workout. Check console.";
+                document.getElementById('modal-message').classList.remove('hidden');
+            } finally {
+                addButton.disabled = false;
+                addButton.textContent = "Add Workout";
+            }
+        }
+        
+        // --- Newsletter Submission Function ---
+        window.subscribeNewsletter = async function(event) {
+            event.preventDefault();
+            
+            const emailInput = document.getElementById('newsletter-email');
+            const submitButton = document.getElementById('newsletter-submit');
+            const email = emailInput.value.trim();
+            
+            if (!email || !email.includes('@')) {
+                emailInput.classList.add('border-red-500');
+                document.getElementById('newsletter-status').textContent = "Please enter a valid email address.";
+                document.getElementById('newsletter-status').classList.remove('hidden');
+                document.getElementById('newsletter-status').classList.remove('text-green-500');
+                document.getElementById('newsletter-status').classList.add('text-red-500');
+                return;
+            }
+
+            submitButton.disabled = true;
+            submitButton.textContent = "Subscribing...";
+            emailInput.classList.remove('border-red-500');
+            document.getElementById('newsletter-status').classList.add('hidden');
+
+            if (!db) {
+                document.getElementById('newsletter-status').textContent = "Database not ready. Subscription failed.";
+                document.getElementById('newsletter-status').classList.remove('hidden', 'text-green-500');
+                document.getElementById('newsletter-status').classList.add('text-red-500');
+                submitButton.disabled = false;
+                submitButton.textContent = "Subscribe";
+                return;
+            }
+
+            try {
+                // Public data path: /artifacts/{appId}/public/data/newsletter_subscribers
+                const collectionPath = `artifacts/${appId}/public/data/newsletter_subscribers`;
+                
+                await addDoc(collection(db, collectionPath), {
+                    email: email,
+                    timestamp: serverTimestamp(),
+                    subscriberId: userId,
+                });
+
+                document.getElementById('newsletter-status').textContent = "Success! You are now subscribed.";
+                document.getElementById('newsletter-status').classList.remove('hidden', 'text-red-500');
+                document.getElementById('newsletter-status').classList.add('text-green-500');
+                emailInput.value = ''; // Clear the input field
+
+            } catch (e) {
+                console.error("Error adding subscriber: ", e);
+                document.getElementById('newsletter-status').textContent = "Subscription failed. Please try again.";
+                document.getElementById('newsletter-status').classList.remove('hidden', 'text-green-500');
+                document.getElementById('newsletter-status').classList.add('text-red-500');
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = "Subscribe";
+            }
+        }
+        // Initialize everything on load
+        initializeFirebase();
+    </script>
+    
+    <!-- Header/Navigation -->
+    <header class="bg-white shadow-md sticky top-0 z-20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
+            <div class="flex items-center space-x-3">
+                <!-- Logo Image - UPDATED SOURCE URL and added error handling -->
+                <img src="https://i.postimg.cc/L6nqr3CC/Purple-and-White-Modern-Icon-Photo-Studio-Logo.png" 
+                     alt="The Padel Athlete Logo" 
+                     class="h-8 w-auto"
+                     onerror="this.onerror=null;this.src='https://placehold.co/100x32/1F2937/FFFFFF?text=TPA';">
+                <!-- Brand Name -->
+                <div class="text-2xl font-extrabold text-primary-600">
+                    THE PADEL ATHLETE
+                </div>
+            </div>
+            
+            <!-- Admin Button -->
+            <button onclick="openModal()" class="bg-accent text-white font-semibold py-2 px-4 rounded-lg shadow-lg hover:bg-accent-dark transition duration-150 active:scale-[.98] flex items-center">
+                <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                Add New WOD
+            </button>
+        </div>
+    </header>
+    
+    <!-- --- About Us / Hero Section --- -->
+    <section class="container-padding pt-10 pb-16">
+        <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-10 items-center bg-white p-8 md:p-12 rounded-xl shadow-xl border border-gray-100">
+            
+            <!-- Text Content -->
+            <div class="order-2 lg:order-1">
+                <h2 class="text-4xl font-extrabold text-primary-600 mb-4">About The Padel Athlete</h2>
+                <p class="text-lg text-gray-700 mb-6 leading-relaxed">
+                    We are dedicated to engineering **Padel-specific athletic performance**. Our WODs (Workouts of the Day) are meticulously designed across 7 key categories—<span class="text-accent font-bold">SYNC, PERFORM, STRENGTH, POWER, AGILITY, RECOVERY, and MOVE</span>—to build players who dominate the court.
+                </p>
+                <p class="text-gray-600 mb-6">
+                    Founded by players who understand the unique demands of Padel, we provide the ultimate training framework you need to convert court potential into match wins. Start exploring our high-performance workouts today.
+                </p>
+                <p class="text-base font-semibold text-accent">
+                    #TrainLikeAPro #PadelWOD
+                </p>
+            </div>
+
+            <!-- Image -->
+            <div class="order-1 lg:order-2">
+                <!-- Placeholder Padel Athlete Image, themed with Red/Black -->
+                <img src="https://placehold.co/800x500/1F2937/DC2626?text=PADEL+ATHLETE+IN+ACTION" 
+                     alt="Main Padel Player performing a shot" 
+                     class="w-full h-auto object-cover rounded-xl shadow-2xl border-4 border-accent" 
+                     loading="lazy">
+            </div>
+        </div>
+    </section>
+    <!-- ----------------------------- -->
+
+    <!-- Filter and Main Content Section -->
+    <section class="container-padding pt-0 pb-12">
+        <div class="max-w-7xl mx-auto">
+            <div class="flex flex-col sm:flex-row justify-between items-end mb-8">
+                <h1 class="text-3xl sm:text-4xl font-bold text-gray-900">
+                    Daily WODs
+                </h1>
+                <p class="text-sm text-gray-500 mt-2 sm:mt-0">
+                    <span id="wod-count" class="text-xl font-bold text-primary-500">...</span> Workouts Live
+                </p>
+            </div>
+
+            <!-- Database Status Message -->
+            <span id="status-message" class="text-sm font-medium text-red-500 mb-4 block">Loading database...</span>
+
+            <!-- Category Filter Bar -->
+            <div id="category-filters" class="flex flex-row overflow-x-auto space-x-3 pb-4 mb-8 sticky bg-white pt-2 z-10 top-[4.5rem] rounded-xl shadow-inner">
+                <!-- Buttons will be injected here by renderFilters() -->
+            </div>
+
+            <!-- Workouts Grid -->
+            <div id="workouts-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <!-- WOD Cards will be injected here by renderWorkouts() -->
+                <div class="md:col-span-3 text-center py-12 text-gray-400">Loading Workouts...</div>
+            </div>
+            
+        </div>
+    </section>
+    
+    <!-- --- Newsletter Section --- -->
+    <section class="container-padding pt-0 pb-16 bg-gray-100">
+        <div class="max-w-3xl mx-auto bg-white p-8 md:p-10 rounded-xl shadow-xl border-t-4 border-accent text-center">
+            <h2 class="text-3xl font-extrabold text-primary-600 mb-2">
+                Get the Edge. Stay Updated.
+            </h2>
+            <p class="text-gray-600 mb-6">
+                Subscribe to **The Padel Athlete Newsletter** for weekly pro tips, exclusive workouts, and deep dives into Padel-specific training methodology.
+            </p>
+            <form onsubmit="subscribeNewsletter(event)" class="flex flex-col sm:flex-row gap-3">
+                <input type="email" id="newsletter-email" placeholder="Enter your email address" required 
+                       class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-primary-500 focus:border-primary-500 transition shadow-sm">
+                <button type="submit" id="newsletter-submit" 
+                        class="bg-accent text-white font-bold py-3 px-6 rounded-lg hover:bg-accent-dark transition duration-150 shadow-md active:scale-[.98] sm:w-auto w-full">
+                    Subscribe
+                </button>
+            </form>
+            <p id="newsletter-status" class="mt-4 text-sm font-medium text-green-500 hidden"></p>
+        </div>
+    </section>
+    <!-- -------------------------- -->
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 text-white py-8">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <p class="text-sm text-gray-400">&copy; 2025 The Padel Athlete. All rights reserved.</p>
+        </div>
+    </footer>
+
+
+    <!-- --- MODAL for Adding New WOD --- -->
+    <div id="add-wod-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-4" onclick="if(event.target.id === 'add-wod-modal') closeModal()">
+        <div class="bg-white rounded-xl w-full max-w-lg shadow-2xl p-6 md:p-8 transform transition-all duration-300">
+            <h2 class="text-2xl font-bold mb-6 text-primary-600">Add New Padel WOD</h2>
+            <form id="add-wod-form" onsubmit="addWorkout(event)">
+                
+                <div id="modal-message" class="hidden text-sm text-red-600 bg-red-50 p-3 rounded-lg mb-4"></div>
+
+                <div class="mb-4">
+                    <label for="wod-title" class="block text-sm font-medium text-gray-700 mb-1">Workout Title</label>
+                    <input type="text" id="wod-title" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-500 focus:border-primary-500 transition shadow-sm">
+                </div>
+
+                <div class="mb-4">
+                    <label for="wod-category" class="block text-sm font-medium text-gray-700 mb-1">Category</label>
+                    <select id="wod-category" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-500 focus:border-primary-500 transition shadow-sm">
+                        <option value="" disabled selected>Select a category...</option>
+                        <!-- Options will be dynamically injected here after Firebase init -->
+                    </select>
+                </div>
+
+                <div class="mb-4">
+                    <label for="wod-content" class="block text-sm font-medium text-gray-700 mb-1">WOD Content / Description</label>
+                    <textarea id="wod-content" rows="6" required placeholder="Example: 4 Rounds For Time (RFT) of: 20 Backhand Volleys, 15 Bench Press, 10 Box Jumps." class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-500 focus:border-primary-500 transition shadow-sm"></textarea>
+                </div>
+
+                <div class="mb-6">
+                    <label for="wod-video-url" class="block text-sm font-medium text-gray-700 mb-1">Video Link (Optional)</label>
+                    <input type="url" id="wod-video-url" placeholder="https://youtube.com/watch?v=..." class="w-full p-3 border border-gray-300 rounded-lg focus:ring-primary-500 focus:border-primary-500 transition shadow-sm">
+                </div>
+
+                <div class="flex justify-end space-x-3">
+                    <button type="button" onclick="closeModal()" class="py-2 px-4 rounded-lg text-gray-600 hover:bg-gray-100 transition duration-150">Cancel</button>
+                    <button type="submit" id="add-wod-submit" class="bg-primary-500 text-white font-bold py-2 px-4 rounded-lg hover:bg-primary-600 transition duration-150 shadow-md active:scale-[.98]">
+                        Add Workout
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+    <!-- End Modal -->
+
+    <!-- Toast Notification for Success -->
+    <div id="toast-success" class="fixed bottom-5 right-5 bg-accent text-white py-3 px-6 rounded-lg shadow-xl transition-opacity duration-300 opacity-0 z-50">
+        Workout successfully added!
+    </div>
+
+</body>
+</html>
